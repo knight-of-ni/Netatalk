@@ -188,10 +188,13 @@ AC_DEFUN([AC_NETATALK_SPOTLIGHT], [
 
     dnl Tracker Managing Command
     if test x"$ac_cv_have_tracker" = x"yes" ; then
-        AC_CHECK_PROGS(ac_cv_tracker_manage, tracker tracker-control, , ["$ac_cv_tracker_prefix"/bin])
+        AC_CHECK_PROGS(ac_cv_tracker_manage, tracker tracker3 tracker-control, , ["$ac_cv_tracker_prefix"/bin])
         if test x"$ac_cv_tracker_manage" = x"tracker" ; then
            TRACKER_MANAGING_COMMAND="tracker daemon"
            AC_DEFINE(TRACKER_MANAGING_COMMAND, "tracker daemon", [tracker managing command])
+        elif test x"$ac_cv_tracker_manage" = x"tracker3" ; then
+           TRACKER_MANAGING_COMMAND="tracker3 daemon"
+           AC_DEFINE(TRACKER_MANAGING_COMMAND, "tracker3 daemon", [tracker managing command])
         elif test x"$ac_cv_tracker_manage" = x"tracker-control" ; then
            TRACKER_MANAGING_COMMAND="tracker-control"
            AC_DEFINE(TRACKER_MANAGING_COMMAND, "tracker-control", [tracker managing command])
