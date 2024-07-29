@@ -45,6 +45,14 @@ if pkgconfdir == ''
     pkgconfdir = sysconfdir
 endif
 
+if host_os == 'darwin'
+    homedir = '/Users'
+elif host_os == 'sunos'
+    homedir = '/export/home'
+else
+    homedir = '/home'
+endif
+
 ##################
 # Compiler flags #
 ##################
@@ -59,9 +67,14 @@ netatalk_common_flags = [
     '-Wno-all',
     '-Wno-deprecated-declarations',
 ]
-netatalk_common_link_args = []
+
+if host_os == 'linux'
+    netatalk_common_flags += '-D_GNU_SOURCE'
+endif
 
 add_global_arguments(netatalk_common_flags, language: 'c')
+
+netatalk_common_link_args = []
 
 # Per target
 
@@ -94,6 +107,7 @@ if host_os in ['dragonfly', 'freebsd', 'openbsd']
     root_includes = include_directories(
         '.',
         'include',
+        'sys',
         'etc/afpd',
         '/usr/local/include',
     )
@@ -101,6 +115,7 @@ elif host_os == 'netbsd'
     root_includes = include_directories(
         '.',
         'include',
+        'sys',
         'etc/afpd',
         '/usr/pkg/include',
     )
@@ -108,6 +123,7 @@ elif host_os == 'omnios'
     root_includes = include_directories(
         '.',
         'include',
+        'sys',
         'etc/afpd',
         '/opt/local/include',
     )
@@ -115,6 +131,7 @@ else
     root_includes = include_directories(
         '.',
         'include',
+        'sys',
         'etc/afpd',
     )
 endif
@@ -125,8 +142,10 @@ endif
 
 flex = find_program('flex', required: false)
 grep = find_program('grep', required: false)
-perl = find_program('perl', required: false)
+perl = find_program('perl', required: true)
 uname = find_program('uname', required: false)
+cmarkgfm = find_program('cmark-gfm', required: false)
+
 if host_os == 'darwin'
     bison = find_program(macos_prefix / 'opt/bison/bin/bison', required: false)
     if not bison.found()
@@ -136,16 +155,11 @@ else
     bison = find_program('bison', required: false)
 endif
 
-################
-# Dependencies #
-################
-
-threads = dependency('threads', required: true)
-
 #############
 # Libraries #
 #############
 
+uname_stdout = run_command(uname, '-a', check: false).stdout().strip()
 libsearch_dirs = []
 
 if host_os in ['dragonfly', 'freebsd', 'openbsd']
@@ -156,7 +170,7 @@ if host_os == 'netbsd'
     libsearch_dirs += '/usr/pkg/lib'
 endif
 
-if uname.found() and run_command(uname, '-n', check: false).stdout().strip().contains('omnios')
+if uname.found() and uname_stdout.to_lower().contains('omnios')
     libsearch_dirs += '/opt/local/lib'
 endif
 
@@ -346,6 +360,12 @@ else
     enable_rpath = get_option('with-rpath')
 endif
 
+if enable_rpath
+    rpath_libdir = libdir
+else
+    rpath_libdir = ''
+endif
+
 if host_os == 'linux'
     enable_dtags = true
 else
@@ -431,9 +451,10 @@ endif
 
 if enable_rpath
     bdb_link_args += '-R' + bdb_libdir
-    if enable_dtags
-        bdb_link_args += '-Wl,--enable-new-dtags'
-    endif
+endif
+
+if enable_dtags
+    bdb_link_args += '-Wl,--enable-new-dtags'
 endif
 
 if bdb_header != ''
@@ -478,38 +499,53 @@ else
 endif
 
 #
+# Check for Unicode Character Database
+#
+
+unicode_dirs = [
+    '/usr/share/unicode',
+    '/usr/share/unicode/ucd',
+    '/usr/pkg/share/texmf-dist/tex/generic/unicode-data',
+    '/usr/local/share/texmf-dist/tex/generic/unicode-data/',
+]
+
+unicode_data_path = get_option('with-unicode-data-path')
+
+if unicode_data_path == ''
+    unicode_data_file = 'UnicodeData.txt'
+    foreach dir : unicode_dirs
+        if fs.exists(dir / 'UnicodeData.txt')
+            unicode_data_file = dir / 'UnicodeData.txt'
+            break
+        endif
+    endforeach
+else
+    unicode_data_file = unicode_data_path / 'UnicodeData.txt'
+endif
+
+if fs.exists(unicode_data_file)
+    message('Using Unicode Character Database: ' + unicode_data_file)
+else
+    error('UnicodeData.txt not found. Specify path with -Dwith-unicode-data-path')
+endif
+
+#
 # Check for crypt or SSL (for DHX authentication)
 #
 
 have_embedded_ssl = get_option('with-embedded-ssl')
-force_embedded_ssl = get_option('with-ssl-override')
+have_ssl_override = get_option('with-ssl-override')
+
+if have_ssl_override
+    have_embedded_ssl = true
+endif
 
 ssl_deps = []
 ssl_link_args = []
 ssl_provider = ''
 
-crypt = cc.find_library('crypt', has_headers: 'crypt.h', required: false)
-if crypt.found()
-    cdata.set('HAVE_CRYPT_H', 1)
-    cdata.set('HAVE_LIBCRYPT', 1)
-endif
-
-des = cc.find_library('des', required: false)
-if des.found()
-    cdata.set('HAVE_LIBDES', 1)
-endif
-
-crypto = dependency('libcrypto', required: false)
-libtls = dependency('libtls', required: false)
-
-if enable_rpath and crypto.found()
-    ssl_link_args += ['-R' / crypto.get_variable(pkgconfig: 'libdir')]
-    if enable_dtags
-        ssl_link_args += '-Wl,--enable-new-dtags'
-    endif
-endif
-
 wolfssl = dependency('wolfssl', required: false)
+nettle = dependency('nettle', required: false)
 
 if wolfssl.found()
     wolfssl_check = run_command(
@@ -520,55 +556,51 @@ if wolfssl.found()
 
     if (
         wolfssl_check.contains('HAVE_DH_DEFAULT_PARAMS')
-        and wolfssl_check.contains('WOLFSSL_DES_ECB')
         and wolfssl_check.contains('OPENSSL_EXTRA')
         and wolfssl_check.contains('OPENSSL_ALL')
     )
         have_wolfssl = true
-        have_embedded_ssl = false
     else
         have_wolfssl = false
         message(
-            'The WolfSSL package on this system does not have the correct configuration for DHX and RANDNUM support',
+            'The WolfSSL package on this system does not have the correct configuration for DHX and RANDNUM UAMs',
         )
     endif
 else
     have_wolfssl = false
 endif
 
-if ((have_wolfssl or have_embedded_ssl) and crypto.found()) or crypto.found()
+if (have_wolfssl or have_embedded_ssl) and nettle.found()
     have_ssl = true
-    cdata.set('HAVE_LIBCRYPTO', 1)
+    if enable_dtags
+        ssl_link_args += '-Wl,--enable-new-dtags'
+    endif
+    if enable_rpath
+        ssl_link_args += ['-R' / nettle.get_variable(pkgconfig: 'libdir')]
+    endif
     cdata.set('UAM_DHX', 1)
-endif
-
-if have_wolfssl
-    if force_embedded_ssl
-        have_embedded_ssl = true
-        ssl_deps += crypto
+    ssl_deps += nettle
+    if have_wolfssl and not have_ssl_override
+        have_embedded_ssl = false
+        ssl_deps += wolfssl
+        ssl_provider += 'WolfSSL'
+        if enable_rpath
+            ssl_link_args += ['-R' / wolfssl.get_variable(pkgconfig: 'libdir')]
+        endif
+        cdata.set('WOLFSSL_DHX', 1)
+    elif have_embedded_ssl
+        libwolfssl_proj = subproject('wolfssl')
+        libssl = libwolfssl_proj.get_variable('libssl_dep')
+        have_wolfssl = false
         ssl_provider += 'built-in'
         cdata.set('EMBEDDED_SSL', 1)
-    else
-        ssl_deps += [crypto, wolfssl]
-        ssl_provider += 'WolfSSL'
-        cdata.set('WOLFSSL_DHX', 1)
-    endif
-elif have_embedded_ssl
-    ssl_deps += crypto
-    ssl_provider += 'built-in'
-    cdata.set('EMBEDDED_SSL', 1)
-elif crypto.found()
-    ssl_deps += crypto
-    cdata.set('OPENSSL_DHX', 1)
-    if libtls.found()
-        ssl_provider += 'LibreSSL'
-    elif not libtls.found()
-        ssl_provider += 'OpenSSL'
     endif
 else
     have_ssl = false
+    have_embedded_ssl = false
+    ssl_provider += 'none'
     warning(
-        'Built-in WolfSSL, LibreSSL or OpenSSL version 1.1 is required for DHX and RANDNUM support',
+        'WolfSSL (embedded or system) and Nettle are required for DHX and RANDNUM UAMs',
     )
 endif
 
@@ -735,7 +767,6 @@ if dns_sd.found()
 endif
 
 zeroconf_provider = ''
-freebsd_zeroconf_daemon = ''
 
 have_dns = (
     (dns_sd.found() or system.found())
@@ -753,7 +784,7 @@ else
     if have_dns
         cdata.set('USE_ZEROCONF', 1)
         cdata.set('HAVE_MDNS', 1)
-        freebsd_zeroconf_daemon = 'mdnsd'
+        cdata.set('freebsd_zeroconf', 'mdnsd')
         zeroconf_provider += 'mDNS'
     else
         have_zeroconf = avahi.found()
@@ -763,7 +794,7 @@ else
             if avahi.version() >= '0.6.4'
                 cdata.set('HAVE_AVAHI_THREADED_POLL', 1)
             endif
-            freebsd_zeroconf_daemon = 'avahi_daemon'
+            cdata.set('freebsd_zeroconf', 'avahi_daemon')
             zeroconf_provider += 'Avahi'
         else
             have_zeroconf = false
@@ -855,7 +886,7 @@ else
             cdata.set(
                 'TRACKER_PREFIX',
                 '"'
-                + tracker_control.get_variable(pkgconfig: 'prefix')
+                + tracker_sparql.get_variable(pkgconfig: 'prefix')
                 + '"',
             )
             tracker_manager += 'tracker_control'
@@ -897,6 +928,39 @@ libevent = dependency(
     required: true,
     not_found_message: 'Libevent library required but not found! Please install the libevent devel package',
 )
+
+#
+# Check for CUPS
+#
+
+cups = dependency('cups', required: false)
+spooldir = ''
+cups_config = find_program('cups-config', required: false)
+
+if not (get_option('with-appletalk') or get_option('with-cups'))
+    have_cups = false
+    spooldir_required = false
+    cdata.set('DISABLE_SPOOL', 1)
+else
+    have_cups = cups.found() and cups_config.found()
+    if have_cups
+        spooldir_required = true
+        cdata.set('HAVE_CUPS', 1)
+        cups_api_version = run_command(
+            cups_config,
+            '--api-version',
+            check: true,
+        ).stdout().strip()
+        cdata.set('CUPS_API_VERSION', '"' + cups_api_version + '"')
+        if get_option('with-spooldir') != ''
+            spooldir += get_option('with-spooldir')
+        else
+            spooldir += prefix / 'var/spool/netatalk'
+        endif
+    else
+        warning('CUPS not found, you might need to specify the path to cups-config')
+    endif
+endif
 
 #
 # Check for quota support
@@ -1020,7 +1084,8 @@ endif
 # Check for Extended Attributes support
 #
 
-ea = '"ad'
+netatalk_ea = '"ad'
+ea_summary = 'AppleDouble'
 attr = cc.find_library('attr', required: false)
 
 if host_os == 'sunos'
@@ -1103,9 +1168,10 @@ else
 endif
 
 if have_ea
-    netatalk_ea = ea + '|sys"'
+    netatalk_ea += '|sys"'
+    ea_summary += ', filesystem EA'
 else
-    netatalk_ea = ea + '"'
+    netatalk_ea += '"'
 endif
 
 cdata.set('EA_MODULES', netatalk_ea)
@@ -1192,7 +1258,7 @@ else
     else
         have_pgp_uam = false
         warning(
-            'Embedded SSL, LibreSSL or OpenSSL version 1.1 is required to build PGP UAM',
+            'WolfSSL (embedded or system) and Nettle are required for PGP UAM',
         )
     endif
 endif
@@ -1375,7 +1441,7 @@ if iconv_path != ''
     endif
     iconv = declare_dependency(
         link_args: libiconv_link_args,
-        include_directories: include_directories(with_libiconv / 'include'),
+        include_directories: include_directories(iconv_path / 'include'),
     )
 endif
 
@@ -1468,16 +1534,23 @@ endif
 # Check for mysql CNID backend
 
 mysqlclient = dependency('mysqlclient', required: false)
+mariadb = dependency('mariadb', required: false)
 
-if not mysqlclient.found()
-    use_mysql_backend = false
-else
-    use_mysql_backend = (
-        mysqlclient.found()
-        and fs.exists(
-            mysqlclient.get_variable(pkgconfig: 'includedir') / 'mysql.h',
+use_mysql_backend = false
+
+if get_option('with-cnid-mysql-backend')
+    if mysqlclient.found()
+        mysql_deps = mysqlclient
+    else
+        mysql_deps = mariadb
+    endif
+    if mysql_deps.found()
+        use_mysql_backend = (
+            fs.exists(
+                mysql_deps.get_variable(pkgconfig: 'includedir') / 'mysql.h',
+            )
         )
-    )
+    endif
     if use_mysql_backend
         cnid_backends += ' mysql'
         cdata.set('CNID_BACKEND_MYSQL', 1)
@@ -1509,7 +1582,7 @@ endif
 #
 
 docbook_path = get_option('with-docbook-path')
-compile_manual = get_option('with-manual')
+compile_manual = get_option('with-manual') != 'none'
 
 xsltproc = find_program('xsltproc', required: false)
 xsl = []
@@ -1518,6 +1591,7 @@ docbook_xsl_dirs = [
     docbook_path,
     '/usr/share/sgml/docbook/xsl-stylesheets',
     '/usr/share/xml/docbook/stylesheet/docbook-xsl',
+    '/usr/share/xml/docbook/xsl-stylesheets',
     '/opt/local/share/xsl/docbook',
     '/usr/local/share/xsl/docbook',
     '/usr/pkg/share/xsl/docbook',
@@ -1619,7 +1693,7 @@ else
 
     if have_pam
         cdata.set('USE_PAM', 1)
-        uams_options += 'PAM'
+        uams_options += 'PAM '
         pampath = pam_dir / 'etc/pam.d'
         # Debian/SuSE
         if fs.exists(pampath / 'common-auth')
@@ -1700,7 +1774,7 @@ else
     have_shadow = (cc.has_header('shadow.h'))
     if have_shadow
         cdata.set('SHADOWPW', 1)
-        uams_options += ' SHADOW'
+        uams_options += 'shadow'
     else
         have_shadow = false
         warning('Shadow password support requested but required header not found')
@@ -1869,19 +1943,26 @@ endif
 # Check for optional initscript install
 #
 
+init_style = get_option('with-init-style')
 init_dirs = []
 
-sed_command = [
-    find_program('sed', required: false),
-    '-e', 's@:BINDIR:@' + bindir + '@',
-    '-e', 's@:LOCALSTATEDIR:@' + localstatedir + '@',
-    '-e', 's@:ETCDIR:@' + pkgconfdir + '@',
-    '-e', 's@:SBINDIR:@' + sbindir + '@',
-    '-e', 's@:NETATALK_VERSION:@' + netatalk_version + '@',
-    '-e', 's@:PATH_NETATALK_LOCK:@' + lockfile_path + '@',
-    '-e', 's@:ZEROCONF:@' + freebsd_zeroconf_daemon + '@',
-    '@INPUT@',
-]
+if init_style == 'auto'
+    if uname_stdout.to_lower().contains('debian') or uname_stdout.to_lower().contains('ubuntu')
+        init_style = 'debian-systemd'
+    elif host_os == 'freebsd'
+        init_style = 'freebsd'
+    elif host_os == 'netbsd'
+        init_style = 'netbsd'
+    elif host_os == 'openbsd'
+        init_style = 'openbsd'
+    elif host_os == 'darwin'
+        init_style = 'macos-launchd'
+    elif host_os == 'sunos'
+        init_style = 'solaris'
+    else
+        init_style = 'none'
+    endif
+endif
 
 #
 # Check for cracklib support
@@ -1964,15 +2045,49 @@ int main(void) {
 endif
 
 #
+# Check whether to enable DDP (AppleTalk)
+#
+
+enable_appletalk = get_option('with-appletalk')
+
+if not enable_appletalk
+    have_appletalk = false
+    cdata.set('NO_DDP', 1)
+else
+    have_appletalk = true
+endif
+
+#
 # OS-specific configuration
 #
+
+cdata.set('OPEN_NOFOLLOW_ERRNO', 'ELOOP')
+use_glibc_at_header = false
 
 if host_os.contains('freebsd')
     cdata.set('BSD4_4', 1)
     cdata.set('FREEBSD', 1)
     cdata.set('OPEN_NOFOLLOW_ERRNO', 'EMLINK')
 elif host_os.contains('linux')
+    use_glibc_at_header = cc.has_header('netatalk/at.h')
     cdata.set('_GNU_SOURCE', 1)
+    if cc.compiles(
+        '''
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <linux/atalk.h>
+
+struct atalk_addr foo;
+
+int main (void){
+
+    ;
+    return 0;
+}
+''',
+    )
+        cdata.set('HAVE_ATALK_ADDR', 1)
+    endif
     cdata.set('HAVE_BROKEN_DBTOB', 1)
     cdata.set('LINUX', 1)
 elif host_os.contains('netbsd')
@@ -1983,6 +2098,7 @@ elif host_os.contains('netbsd')
 elif host_os.contains('openbsd')
     cdata.set('BSD4_4', 1)
     cdata.set('UAM_DHX', 1) # OpenBSD does not have crypt.h, uses unistd.h
+    cdata.set('NO_DDP', 1)
 elif host_os.contains('sunos')
     cdata.set('__EXTENSIONS__', 1)
     cdata.set('__svr4__', 1)
@@ -2022,18 +2138,15 @@ endif
 # Variable substitution
 #
 
-# Reserved for future use:
-#cdata.set('BINDIR', bindir)
-#cdata.set('ETCDIR', pkgconfdir)
-#cdata.set('PATH_NETATALK_LOCK', lockfile_path)
-#cdata.set('SBINDIR', sbindir)
-
+cdata.set('bindir', bindir)
+cdata.set('etcdir', pkgconfdir)
 cdata.set('exec_prefix', exec_prefix)
-cdata.set('includedir', includedir)
+cdata.set('homedir', homedir)
 cdata.set('libdir', libdir)
+cdata.set('includedir', includedir)
 cdata.set('localstatedir', localstatedir)
-cdata.set('NETATALK_VERSION', netatalk_version)
-cdata.set('OPEN_NOFOLLOW_ERRNO', 'ELOOP')
+cdata.set('lockfile_path', lockfile_path)
+cdata.set('netatalk_version', netatalk_version)
 cdata.set('pkgconfdir', pkgconfdir)
 cdata.set('prefix', prefix)
 cdata.set('sbindir', sbindir)
@@ -2048,6 +2161,57 @@ configure_file(
     configuration: cdata,
 )
 
+#########################
+# Prepare documentation #
+#########################
+
+
+if get_option('with-readmes')
+    readmes = [
+        'CONTRIBUTORS',
+        'NEWS',
+    ]
+
+    if cmarkgfm.found()
+        readmes_md = [
+            'INSTALL',
+            'README',
+            'SECURITY',
+        ]
+
+        foreach file : readmes_md
+            custom_target(
+                'readmes_' + file,
+                input: file + '.md',
+                output: file + '.txt',
+                command: [
+                    'cmark-gfm',
+                    '--width', '80',
+                    '--to', 'plaintext',
+                    '@INPUT@',
+                ],
+                capture: true,
+                install: true,
+                install_dir: datadir / 'doc/netatalk',
+            )
+        endforeach
+    else
+        warning('cmark-gfm is required for markdown to text conversion')
+        readmes += [
+            'INSTALL.md',
+            'README.md',
+            'SECURITY.md',
+        ]
+    endif
+
+    foreach file : readmes
+        install_data(
+            file,
+            install_dir: datadir / 'doc/netatalk',
+        )
+    endforeach
+endif
+
 subdir('include')
 subdir('libatalk')
 subdir('bin')
@@ -2055,9 +2219,9 @@ subdir('config')
 subdir('etc')
 subdir('contrib')
 subdir('distrib')
-subdir('man')
+subdir('sys')
 
-if get_option('with-manual')
+if get_option('with-manual') != 'none'
     subdir('doc')
 endif
 
@@ -2097,58 +2261,44 @@ summary_info = {
     'host CPU': cpu,
     'host endianness': build_machine.endian(),
     'C compiler': cc.get_id(),
+    'Shared or static libraries': get_option('default_library'),
 }
 summary(summary_info, bool_yn: true, section: 'Compilation:')
 
 # Configuration summary
 
-uams_using_options = '(' + uams_options + ')'
-
 summary({'Netatalk version': netatalk_version}, section: 'Configuration Summary:')
-summary_info = {
-    '  Initscript style': get_option('with-init-style'),
-}
-summary(summary_info, bool_yn: true, section: '  Init Style:')
 
 summary_info = {
-    '  Extended Attributes': netatalk_ea,
-    '  Spotlight support': have_spotlight,
+    '  Access control': uams_options,
+    '  CNID backends': summary_backends,
+    '  Extended Attributes': ea_summary,
+    '  Init script style': init_style,
 }
-summary(summary_info, bool_yn: true, section: '  AFP:')
+summary(summary_info, bool_yn: true, section: '  Options:')
 
 summary_info = {
-    '  Backends': summary_backends,
-}
-summary(summary_info, bool_yn: true, section: '  CNID:')
-
-summary_info = {
+    '  ClearTxt': true,
+    '  DHX': have_ssl,
+    '  DHX2': have_libgcrypt,
+    '  Guest': true,
     '  Kerberos V': have_krb5_uam,
-    '  PGP': enable_pgp_uam,
-    '  Randnum': '(afppasswd)',
-    '  clrtxt': uams_using_options,
-    '  guest': true,
+    '  PGP': have_pgp_uam,
+    '  RandNum': have_ssl,
 }
-if have_ssl
-    summary_info += {
-        '  DHX': uams_using_options,
-    }
-endif
-if have_libgcrypt
-    summary_info += {
-        '  DHX2': uams_using_options,
-    }
-endif
-summary(summary_info, bool_yn: true, section: '  UAMs:')
+summary(summary_info, bool_yn: true, section: '  User Authentication Methods:')
 
 summary_info = {
-    '  ACL support': have_acls,
+    '  ACL': have_acls,
     '  AFP stats via dbus': have_afpstats,
-    '  Cracklib support': have_cracklib,
+    '  AppleTalk': have_appletalk,
+    '  Cracklib': have_cracklib,
+    '  CUPS': have_cups,
     '  dtrace probes': have_dtrace,
-    '  GSSAPI support': have_gssapi,
-    '  Kerberos support': have_kerberos,
-    '  LDAP support': have_ldap,
-    '  Quota support': have_quota,
+    '  GSSAPI': have_gssapi,
+    '  Kerberos': have_kerberos,
+    '  LDAP': have_ldap,
+    '  Quota': have_quota,
 }
 if have_quota
     summary_info += {
@@ -2156,16 +2306,17 @@ if have_quota
     }
 endif
 summary_info += {
+    '  Spotlight': have_spotlight,
     '  SSL provider': ssl_provider,
-    '  TCP wrapper support': have_tcpwrap,
-    '  Zeroconf support': have_zeroconf,
+    '  TCP wrapper': have_tcpwrap,
+    '  Zeroconf': have_zeroconf,
 }
 if enable_zeroconf
     summary_info += {
         '  Zeroconf provider': zeroconf_provider,
     }
 endif
-summary(summary_info, bool_yn: true, section: '  Options:')
+summary(summary_info, bool_yn: true, section: '  Features:')
 
 summary_info = {
     '  dbus daemon path': dbus_daemonpath,
@@ -2173,6 +2324,8 @@ summary_info = {
     '  init directory': init_dirs,
     '  Netatalk lockfile': lockfile,
     '  PAM config directory': pam_confdir,
+    '  CUPS print spool directory': spooldir,
+    '  User home basedir': homedir,
 }
 if have_spotlight
     summary_info += {
@@ -2186,5 +2339,8 @@ if have_spotlight
 endif
 summary(summary_info, bool_yn: true, section: '  Paths:')
 
-summary_info = {'  Docbook': build_xml_docs}
+summary_info = {
+    '  Docbook': build_xml_docs,
+    '  Manual style': get_option('with-manual'),
+}
 summary(summary_info, bool_yn: true, section: '  Documentation:')
