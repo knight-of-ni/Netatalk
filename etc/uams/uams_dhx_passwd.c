@@ -8,6 +8,7 @@
 #include "config.h"
 #endif /* HAVE_CONFIG_H */
 
+#include "include/wolfssl/ssl.h"
 #include <arpa/inet.h>
 #include <pwd.h>
 #include <stdio.h>

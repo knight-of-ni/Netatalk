@@ -11,6 +11,7 @@
 
 #if defined(USE_PAM) && defined(UAM_DHX)
 
+#include "include/wolfssl/ssl.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
