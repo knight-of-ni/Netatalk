@@ -27,6 +27,7 @@
 
 #if defined(EMBEDDED_SSL) || defined(WOLFSSL_DHX)
 #if defined(WOLFSSL_DHX)
+#include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/options.h>
 #endif
 #include <wolfssl/openssl/des.h>
