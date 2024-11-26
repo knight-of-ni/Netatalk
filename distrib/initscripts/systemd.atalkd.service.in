@@ -9,6 +9,8 @@ After=network-online.target
 [Service]
 Type=forking
 GuessMainPID=no
+RuntimeDirectory=@runtimedir@
+RuntimeDirectoryPreserve=yes
 ExecStartPre=/bin/sh -c 'systemctl set-environment ATALK_NAME=$$(hostname|cut -d. -f1)'
 ExecStart=@sbindir@/atalkd
 ExecStartPost=-@bindir@/nbprgstr -p 4 "${ATALK_NAME}:Workstation"
