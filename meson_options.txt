@@ -280,6 +280,12 @@ option(
     description: 'Set path to Netatalk lockfile',
 )
 option(
+    'with-runtime-dir',
+    type: 'string',
+    value: '',
+    description: 'Systemd directory name of the runtime subfolder. Name must be relative and must not include /run or /var/run.',
+)
+option(
     'with-pam-path',
     type: 'string',
     value: '',

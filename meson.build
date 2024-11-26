@@ -1745,10 +1745,75 @@ else
 endif
 
 #
-# Netatalk lockfile path
+# Check for optional initscript install
 #
 
+init_style = get_option('with-init-style')
+init_dirs = []
+init_style_auto = false
+init_cmd = ''
+
+if 'auto' in init_style
+    init_style_auto = true
+    if host_os == 'linux'
+        if linux_distro in ['arch', 'centos', 'debian', 'fedora', 'rhel', 'suse', 'ubuntu']
+            init_style = ['systemd']
+            init_cmd = 'systemctl'
+        elif linux_distro in ['alpine', 'gentoo']
+            init_style = ['openrc']
+            init_cmd = 'rc-service'
+        endif
+    elif host_os == 'freebsd'
+        init_style = ['freebsd']
+    elif host_os == 'netbsd'
+        init_style = ['netbsd']
+        init_cmd = 'service'
+    elif host_os == 'openbsd'
+        init_style = ['openbsd']
+        init_cmd = 'rcctl'
+    elif host_os == 'darwin'
+        init_style = ['macos-launchd']
+    elif host_os == 'sunos'
+        init_style = ['solaris']
+        init_cmd = 'svcadm'
+    else
+        init_style = ['none']
+    endif
+endif
+
+if init_cmd != ''
+    init_program = find_program(init_cmd, required: not init_style_auto)
+    if not init_program.found()
+        warning(init_cmd + ' not found, defaulting to no init scripts')
+        init_style = ['none']
+        init_cmd = ''
+    endif
+endif
+
+#
+# Setting Runtime Directory requires setting lockfile path
+#
+runtime_dir = get_option('with-runtime-dir')
 lockfile_path = get_option('with-lockfile-path')
+
+if runtime_dir != '' and lockfile_path == ''
+    error('Setting with-runtime-dir requires with-lockfile-path')
+endif
+
+#
+# Netatalk Runtime Directory
+#
+runtimedir = ''
+
+if runtime_dir != ''
+    runtimedir += runtime_dir
+else
+    runtimedir = 'netatalk'
+endif
+
+#
+# Netatalk lockfile path
+#
 lockfile = ''
 
 if lockfile_path != ''
@@ -1758,7 +1823,11 @@ elif host_os == 'freebsd'
 elif host_os in ['netbsd', 'openbsd', 'darwin']
     lockfile += '/var/run/netatalk.pid'
 elif host_os == 'linux'
-    lockfile += '/var/lock/netatalk'
+    if 'systemd' in init_style
+        lockfile = join_paths('/run', runtimedir, 'netatalk.pid')
+    else
+        lockfile += '/var/lock/netatalk'
+    endif
 else
     lockfile += '/var/spool/locks/netatalk'
 endif
@@ -1891,52 +1960,6 @@ if threads.found()
     ''',
     )
         cdata.set('HAVE_PTHREAD_PRIO_INHERIT', 1)
-    endif
-endif
-
-#
-# Check for optional initscript install
-#
-
-init_style = get_option('with-init-style')
-init_dirs = []
-init_style_auto = false
-init_cmd = ''
-
-if 'auto' in init_style
-    init_style_auto = true
-    if host_os == 'linux'
-        if linux_distro in ['arch', 'centos', 'debian', 'fedora', 'rhel', 'suse', 'ubuntu']
-            init_style = ['systemd']
-            init_cmd = 'systemctl'
-        elif linux_distro in ['alpine', 'gentoo']
-            init_style = ['openrc']
-            init_cmd = 'rc-service'
-        endif
-    elif host_os == 'freebsd'
-        init_style = ['freebsd']
-    elif host_os == 'netbsd'
-        init_style = ['netbsd']
-        init_cmd = 'service'
-    elif host_os == 'openbsd'
-        init_style = ['openbsd']
-        init_cmd = 'rcctl'
-    elif host_os == 'darwin'
-        init_style = ['macos-launchd']
-    elif host_os == 'sunos'
-        init_style = ['solaris']
-        init_cmd = 'svcadm'
-    else
-        init_style = ['none']
-    endif
-endif
-
-if init_cmd != ''
-    init_program = find_program(init_cmd, required: not init_style_auto)
-    if not init_program.found()
-        warning(init_cmd + ' not found, defaulting to no init scripts')
-        init_style = ['none']
-        init_cmd = ''
     endif
 endif
 
@@ -2152,6 +2175,7 @@ cdata.set('libdir', libdir)
 cdata.set('includedir', includedir)
 cdata.set('localstatedir', localstatedir)
 cdata.set('lockfile_path', lockfile_path)
+cdata.set('runtimedir', runtimedir)
 cdata.set('netatalk_version', netatalk_version)
 cdata.set('pkgconfdir', pkgconfdir)
 cdata.set('prefix', prefix)
