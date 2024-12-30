@@ -1592,6 +1592,7 @@ else
     endif
 
     docbook_xsl_dirs += [
+        docbook_path,
         '/usr/share/sgml/docbook/xsl-stylesheets',
         '/usr/share/xml/docbook/stylesheet/docbook-xsl',
         '/usr/share/xml/docbook/xsl-stylesheets-nons',
